@@ -1,3 +1,6 @@
 cmake_minimum_required(VERSION 3.16.0)
 project (traceroute)
-add_executable(traceroute main.c)
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
+add_executable(traceroute traceroute.c)
+target_link_libraries(traceroute PRIVATE Threads::Threads)

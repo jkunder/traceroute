@@ -1,17 +1,26 @@
 #include <arpa/inet.h>
 #include <stdbool.h>
+#include <errno.h>
+#include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <netinet/ip_icmp.h>
+#include <netinet/tcp.h>
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/epoll.h>
 
 #define SRC_PORT 1234
+
+void * receive_ack( void *ptr );
+void process_packet(unsigned char* , int);
+int start_sniffer(void);
 
 void Usage(void) {
     printf ("Usage : traceroute <ip address>|<hostname> [--tcp]");
@@ -34,6 +43,39 @@ int resolve_host (char *host, struct sockaddr_in *addr) {
 
 #define RECV_TIMEOUT 5
 #define TRACEROUTE_DATA 10 
+struct in_addr dest_ip;
+
+int get_local_ip ( char * buffer)
+{
+	int sock = socket ( AF_INET, SOCK_DGRAM, 0);
+
+	const char* kGoogleDnsIp = "8.8.8.8";
+	int dns_port = 53;
+
+	struct sockaddr_in serv;
+
+	memset( &serv, 0, sizeof(serv) );
+	serv.sin_family = AF_INET;
+	serv.sin_addr.s_addr = inet_addr(kGoogleDnsIp);
+	serv.sin_port = htons( dns_port );
+
+	int err = connect( sock , (const struct sockaddr*) &serv , sizeof(serv) );
+
+	struct sockaddr_in name;
+	socklen_t namelen = sizeof(name);
+	err = getsockname(sock, (struct sockaddr*) &name, &namelen);
+
+	const char *p = inet_ntop(AF_INET, &name.sin_addr, buffer, 100);
+
+	close(sock);
+}
+
+typedef struct traceroute_tcp_pkt_t_ {
+    struct ip iphdr;
+    struct tcphdr hdr;
+    //char msg[TRACEROUTE_DATA];
+} traceroute_tcp_pkt_t;
+
 typedef struct traceroute_pkt_ {
     struct icmphdr hdr;
     char msg[TRACEROUTE_DATA];
@@ -42,7 +84,32 @@ typedef struct traceroute_pkt_ {
 typedef struct traceroute_rcv_pkt_ {
     struct ip iphdr;
     traceroute_pkt tr;
+    char msg[100];
 } traceroute_rcv_pkt;
+
+unsigned short csum(unsigned short *ptr,int nbytes) {
+    register long sum;
+    unsigned short oddbyte;
+    register short answer;
+ 
+    sum=0;
+    while(nbytes>1) {
+        sum+=*ptr++;
+        nbytes-=2;
+    }
+    if(nbytes==1) {
+        oddbyte=0;
+        *((u_char*)&oddbyte)=*(u_char*)ptr;
+        sum+=oddbyte;
+    }
+ 
+    sum = (sum>>16)+(sum & 0xffff);
+    sum = sum + (sum>>16);
+    answer=(short)~sum;
+     
+    return(answer);
+}
+
 
 uint16_t calculate_checksum(void *pkt, int len)
 {    
@@ -66,6 +133,160 @@ uint16_t calculate_checksum(void *pkt, int len)
 #define REPEAT_HOP 3
 #define MAX_TTL 64
 
+struct pseudo_header    //needed for checksum calculation
+{
+	unsigned int source_address;
+	unsigned int dest_address;
+	unsigned char placeholder;
+	unsigned char protocol;
+	unsigned short tcp_length;
+	struct tcphdr tcp;
+};
+
+
+int
+traceroute_tcp(struct sockaddr_in *addr) {
+    int sock_fd;
+    int ttl = 1;
+    struct timeval trc_timeout;
+    struct timespec time_start, time_end;
+    trc_timeout.tv_sec = RECV_TIMEOUT;
+    trc_timeout.tv_usec = 0;
+
+    traceroute_tcp_pkt_t trc_pkt;
+    traceroute_rcv_pkt trc_recv_pkt;
+    char iphop[INET_ADDRSTRLEN];
+    struct sockaddr_in iphop_addr;
+    int i = 0;
+    double rtt[REPEAT_HOP];
+    struct sockaddr_in recv_addr;
+    int addr_len=sizeof(recv_addr);
+    bool tr_fail = false;
+    bool done=false;
+
+    sock_fd = socket(AF_INET, SOCK_RAW, IPPROTO_TCP);
+    if (sock_fd < 0) {
+        printf ("Failed creating socket \n");
+        return -1;
+    }
+
+    if (setsockopt(sock_fd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&trc_timeout, sizeof(trc_timeout)) != 0) {
+        printf ("Setting socket option for timeout failed \n");
+        return -1;
+    }
+
+    int sock_raw = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+
+    memset(&trc_pkt, 0, sizeof(trc_pkt));
+    memset(&trc_recv_pkt, 0, sizeof(trc_recv_pkt));
+
+    
+    char source_ip[20];
+	get_local_ip( source_ip );
+    printf ("SOURCE IP = %s \n", source_ip);
+
+    trc_pkt.iphdr.ip_hl = 5;
+	trc_pkt.iphdr.ip_v = 4;
+	trc_pkt.iphdr.ip_tos = 0;
+	trc_pkt.iphdr.ip_len = sizeof (struct ip) + sizeof (struct tcphdr);
+	trc_pkt.iphdr.ip_id = htons (54321);	//Id of this packet
+	trc_pkt.iphdr.ip_off = htons(16384);
+	trc_pkt.iphdr.ip_ttl = 1;
+	trc_pkt.iphdr.ip_p = IPPROTO_TCP;
+	trc_pkt.iphdr.ip_sum = 0;		//Set to 0 before calculating checksum
+	trc_pkt.iphdr.ip_src.s_addr = inet_addr ( source_ip );	//Spoof the source ip address
+	trc_pkt.iphdr.ip_dst = addr->sin_addr;
+ 
+
+
+    int sport = 12345;
+    trc_pkt.hdr.source = htons( sport);
+    trc_pkt.hdr.dest = htons( 80);
+    trc_pkt.hdr.ack_seq = 0;
+    trc_pkt.hdr.seq = htonl(10000010);
+    trc_pkt.hdr.doff = sizeof(struct tcphdr)/4;
+    trc_pkt.hdr.fin = 0;
+    trc_pkt.hdr.syn = 1;
+    trc_pkt.hdr.rst = 0;
+    trc_pkt.hdr.psh = 0;
+    trc_pkt.hdr.ack = 0;
+    trc_pkt.hdr.urg = 0;
+    trc_pkt.hdr.window = htons(8192);
+    trc_pkt.hdr.check = 0; //Let IP stack calculate checksum
+    trc_pkt.hdr.urg_ptr = 0;
+
+    int one = 1;
+	const int *val = &one;
+    if (setsockopt (sock_fd, IPPROTO_IP, IP_HDRINCL, val, sizeof (one)) < 0)
+	{
+		printf ("Error setting IP_HDRINCL. Error number : %d . Error message : %s \n" , errno , strerror(errno));
+		exit(0);
+	}
+
+    printf("Starting sniffer thread...\n");
+	char *message1 = "Thread 1";
+	int  iret1;
+	pthread_t sniffer_thread;
+
+	if( pthread_create( &sniffer_thread , NULL ,  receive_ack , (void*) message1) < 0)
+	{
+		printf ("Could not create sniffer thread. Error number : %d . Error message : %s \n" , errno , strerror(errno));
+		exit(0);
+	}
+
+    struct pseudo_header psh;
+    psh.source_address = inet_addr( source_ip );
+	psh.dest_address = addr->sin_addr.s_addr;
+	psh.placeholder = 0;
+	psh.protocol = IPPROTO_TCP;
+	psh.tcp_length = htons( sizeof(struct tcphdr) );
+		
+	memcpy(&psh.tcp , &trc_pkt.hdr , sizeof (struct tcphdr));
+    trc_pkt.hdr.check = csum( (unsigned short*) &psh , sizeof (struct pseudo_header));
+
+    for (ttl=1; ttl<10 && done==false; ttl++) {
+        printf ("ttl = %d \n", ttl);
+        for (i=0; i<REPEAT_HOP; i++) {
+            trc_pkt.iphdr.ip_ttl = ttl;
+            sleep(1);
+            //trc_pkt.hdr.source = htons( sport++);
+
+
+            /*
+            if (setsockopt(sock_fd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl))!=0) {
+                printf ("Setting socket option for TTLfailed \n");
+                return -1;
+            }
+            */
+            usleep(1000);
+            clock_gettime(CLOCK_MONOTONIC, &time_start);
+            printf ("Sending packet \n");
+            if (sendto(sock_fd, &trc_pkt, sizeof(trc_pkt), 0, (struct sockaddr *)addr,
+                sizeof(*addr)) <= 0) {
+                    printf("\nPacket Sending Failed!\n");
+            }
+        
+           /*
+            iphop_addr = recv_addr;
+            clock_gettime(CLOCK_MONOTONIC, &time_end);
+            double timeElapsed = ((double)(time_end.tv_nsec - 
+                                     time_start.tv_nsec))/1000000.0;
+            rtt[i] = (time_end.tv_sec- time_start.tv_sec) * 1000.0 + timeElapsed;
+    
+            printf("Error.. Packet received with ICMP type %x code %x \n",
+                trc_recv_pkt.tr.hdr.type, trc_recv_pkt.tr.hdr.code);
+            printf("Error.. Packet received with ICMP 0x%x \n",
+                trc_recv_pkt.iphdr.ip_len );
+            */
+        }
+    
+        if (tr_fail == false) {
+            inet_ntop(AF_INET, &(iphop_addr.sin_addr), iphop, INET_ADDRSTRLEN);
+            printf (" %2d  %s  %3.3fms %3.3fms  %3.3fms \n", ttl, iphop, rtt[0], rtt[1], rtt[2]);
+        }
+    }
+    return 0;
+}
 int
 traceroute_icmp(struct sockaddr_in *addr) {
     int sock_fd;
@@ -186,10 +407,146 @@ int main(int argc, char *argv[])
     }
 
     
+    dest_ip.s_addr = sa.sin_addr.s_addr;
     inet_ntop(AF_INET, &(sa.sin_addr), dest_addr, INET_ADDRSTRLEN);
     printf ("traceroute to %s (%s), %d hops max \n", argv[1], dest_addr, MAX_TTL);
-    traceroute_icmp(&sa);
+    //traceroute_icmp(&sa);
+    traceroute_tcp(&sa);
 
     //printf ("traceroute to %s 0x%x tcp = %s \n", argv[ip_arg], ntohl(sa.sin_addr.s_addr), (tcp_traceroute == true)?"true":"false");
     return 0;
+}
+
+/*
+	Method to sniff incoming packets and look for Ack replies
+*/
+void * receive_ack( void *ptr )
+{
+	//Start the sniffer thing
+	start_sniffer();
+}
+
+static struct epoll_event *events;
+int start_sniffer()
+{
+	int sock_tcp;
+	int sock_icmp;
+	
+	int saddr_size , data_size;
+	struct sockaddr saddr;
+	
+	unsigned char *buffer = (unsigned char *)malloc(65536); //Its Big!
+	
+	printf("Sniffer initialising...\n");
+	fflush(stdout);
+
+    int epollfd = -1;
+    struct epoll_event ev;
+    if ( (epollfd = epoll_create(4096)) < 0) {
+        perror("epoll_create error");
+        exit(EXIT_FAILURE);
+    }
+    events = calloc(50, sizeof(struct epoll_event));
+
+	//Create a raw socket that shall sniff
+	sock_tcp = socket(AF_INET , SOCK_RAW , IPPROTO_TCP);
+	if(sock_tcp < 0)
+	{
+		printf("Socket Error\n");
+		fflush(stdout);
+		return 1;
+	}
+
+    ev.events = EPOLLIN | EPOLLET;
+    ev.data.fd = sock_tcp;
+    if (epoll_ctl(epollfd, EPOLL_CTL_ADD, sock_tcp, &ev) == -1) {
+        perror("epoll_ctl: sock_tcp");
+        exit(EXIT_FAILURE);
+    }
+
+	sock_icmp = socket(AF_INET , SOCK_RAW , IPPROTO_ICMP);
+	if(sock_icmp < 0)
+	{
+		printf("Socket Error\n");
+		fflush(stdout);
+		return 1;
+	}
+    ev.events = EPOLLIN | EPOLLET;
+    ev.data.fd = sock_icmp;
+    if (epoll_ctl(epollfd, EPOLL_CTL_ADD, sock_icmp, &ev) == -1) {
+        perror("epoll_ctl: sock_tcp");
+        exit(EXIT_FAILURE);
+    }
+	
+	saddr_size = sizeof saddr;
+    int client_fd = -1;
+    int res = -1;
+
+    while (1) {
+        res = epoll_wait(epollfd, events, 1, -1);
+        client_fd = events[0].data.fd;
+        if (client_fd == sock_tcp) {
+		    data_size = recvfrom(sock_tcp , buffer , 65536 , 0 , &saddr , &saddr_size);
+        }
+        if (client_fd == sock_icmp) {
+		    data_size = recvfrom(sock_icmp , buffer , 65536 , 0 , &saddr , &saddr_size);
+        }
+		//Receive a packet
+		process_packet(buffer , data_size);
+    }
+	
+ #if 0
+	while(1)
+	{
+		
+		if(data_size <0 )
+		{
+			printf("Recvfrom error , failed to get packets\n");
+			fflush(stdout);
+			return 1;
+		}
+		
+		//Now process the packet
+		process_packet(buffer , data_size);
+	}
+#endif
+	
+	close(sock_tcp);
+	printf("Sniffer finished.");
+	fflush(stdout);
+	return 0;
+}
+
+void process_packet(unsigned char* buffer, int size)
+{
+	//Get the IP Header part of this packet
+	struct ip *iph = (struct ip*)buffer;
+	struct sockaddr_in source,dest;
+	unsigned short iphdrlen;
+	
+	if(iph->ip_p == 6)
+	{
+		struct ip *iph = (struct ip *)buffer;
+		iphdrlen = iph->ip_hl*4;
+	
+		struct tcphdr *tcph=(struct tcphdr*)(buffer + iphdrlen);
+			
+		memset(&source, 0, sizeof(source));
+		source.sin_addr.s_addr = iph->ip_src.s_addr;
+	
+		memset(&dest, 0, sizeof(dest));
+		dest.sin_addr.s_addr = iph->ip_dst.s_addr;
+		
+		if(tcph->syn == 1 && tcph->ack == 1 && source.sin_addr.s_addr == dest_ip.s_addr )
+		{
+			printf("Port %d open \n" , ntohs(tcph->source));
+			fflush(stdout);
+		}
+        //printf(" Packet received with TCP \n");
+        //fflush(stdout);
+	} else {
+        printf(" Packet received with ICMP \n");
+        fflush(stdout);
+    }
+
 }
