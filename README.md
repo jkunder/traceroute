@@ -7,6 +7,13 @@
     User can optionally specify a --tcp option which uses TCP SYN packets instead of ICMP echo requests.
 
 ## Build Instructions
+Either use containerized build or build on a Linux host
+
+### Containerized build
+```
+./build.sh
+```
+
 ### On Linux host
 The traceroute binary is generated in the build directory  
 (Min requirements build-essential tools,  cmake (version 3.10 and above))
@@ -15,11 +22,6 @@ cd build
 cmake ..
 make 
 ```  
-
-### Containerized build
-```
-./build.sh
-```
 
 ### Run Instructions
 Note RTT for packets not received by the application are displayed as 0.000ms

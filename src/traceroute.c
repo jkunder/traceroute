@@ -339,6 +339,10 @@ int start_sniffer()
     // Repeat till final response from server is reached, which is indicated in the packet processing function
     while (done_flag == false) {
         count = epoll_wait(epollfd, events, MAX_EVENTS, -1);
+        if (count < 0) {
+            perror("epoll Wait error : ");
+            exit(EXIT_FAILURE);
+        }
         for (pkt = 0; pkt < count; pkt ++) {
             client_fd = events[pkt].data.fd;
             if (client_fd == sock_tcp) {
