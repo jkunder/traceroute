@@ -18,41 +18,30 @@
 #include "net_utils.h"
 
 
-void * receive_ack( void *ptr );
-void process_packet(unsigned char* , int , struct sockaddr_in*);
-int start_sniffer(void);
+// rx thread writes true when packet from server is received
+// indicating to tx thread to stop hops
 bool done_flag = false;
+// The last sequence number that was received
 int done_offset = 0;
-
-void Usage(void) {
-    printf ("Usage : traceroute <ip address>|<hostname> [--tcp]");
-    return;
-}
-
-#define RECV_TIMEOUT 5
-#define TRACEROUTE_DATA 10 
 struct in_addr dest_ip;
-struct in_addr src_ip;
+struct in_addr local_ip;
 
+// Trace Route Constants
 #define REPEAT_HOP 3
 #define MAX_TTL 30 
 #define START_IP_ID 1000
 #define MAX_EVENTS 100
 #define INTER_HOP_DELAY 100000 //100ms
 
-struct pseudo_header    //needed for checksum calculation
-{
-	unsigned int source_address;
-	unsigned int dest_address;
-	unsigned char placeholder;
-	unsigned char protocol;
-	unsigned short tcp_length;
-	struct tcphdr tcp;
-};
-
+// Store the Tx and Rx times and the Hop's IP
 struct timespec txtime[REPEAT_HOP*MAX_TTL];
 struct timespec rxtime[REPEAT_HOP*MAX_TTL];
 struct sockaddr_in iphop_addr[REPEAT_HOP*MAX_TTL];
+
+void Usage(void) {
+    printf ("Usage : traceroute <ip address>|<hostname> [--tcp]");
+    return;
+}
 
 /*
  * Print trace route output
@@ -88,21 +77,16 @@ void print_output(void) {
     }
 }
 
-int
-traceroute_tcp(struct sockaddr_in *addr) {
+/*
+ * Transmit SYN packets for traceroute
+ */
+int traceroute_tcp(struct sockaddr_in *addr) {
     int sock_fd;
     int ttl = 1;
-    struct timeval trc_timeout;
-    struct timespec time_start, time_end;
-    trc_timeout.tv_sec = RECV_TIMEOUT;
-    trc_timeout.tv_usec = 0;
-
-    traceroute_tcp_pkt_t trc_pkt;
+    int offset = 0;
     int i = 0;
-    struct sockaddr_in recv_addr;
-    int addr_len=sizeof(recv_addr);
-    bool tr_fail = false;
-    bool done=false;
+    traceroute_tcp_pkt_t trc_pkt;
+    int sock_raw;
 
     sock_fd = socket(AF_INET, SOCK_RAW, IPPROTO_TCP);
     if (sock_fd < 0) {
@@ -110,65 +94,35 @@ traceroute_tcp(struct sockaddr_in *addr) {
         return -1;
     }
 
-    if (setsockopt(sock_fd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&trc_timeout, sizeof(trc_timeout)) != 0) {
-        printf ("Setting socket option for timeout failed \n");
-        return -1;
-    }
-
-    int sock_raw = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+    sock_raw = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
 
     memset(&trc_pkt, 0, sizeof(trc_pkt));
 
-    trc_pkt.iphdr.ip_hl = 5;
-	trc_pkt.iphdr.ip_v = 4;
-	trc_pkt.iphdr.ip_tos = 0;
-	trc_pkt.iphdr.ip_len = sizeof (struct ip) + sizeof (struct tcphdr);
-	trc_pkt.iphdr.ip_id = htons (START_IP_ID);	//Id of this packet
-	trc_pkt.iphdr.ip_off = htons(16384);
-	trc_pkt.iphdr.ip_ttl = 1;
-	trc_pkt.iphdr.ip_p = IPPROTO_TCP;
-	trc_pkt.iphdr.ip_sum = 0;		//Set to 0 before calculating checksum
-	trc_pkt.iphdr.ip_src.s_addr = src_ip.s_addr;
-	trc_pkt.iphdr.ip_dst = addr->sin_addr;
- 
+    traceroute_iphdr_init(&trc_pkt.iphdr, &local_ip, &addr->sin_addr, IPPROTO_TCP);
+    traceroute_tcphdr_init(&trc_pkt.tcp_hdr);
 
-
-    int sport = 12345;
-    trc_pkt.tcp_hdr.source = htons( sport);
-    trc_pkt.tcp_hdr.dest = htons( SYN_TCP_PORT);
-    trc_pkt.tcp_hdr.ack_seq = 0;
-    trc_pkt.tcp_hdr.seq = htonl(10000010);
-    trc_pkt.tcp_hdr.doff = sizeof(struct tcphdr)/4;
-    trc_pkt.tcp_hdr.fin = 0;
-    trc_pkt.tcp_hdr.syn = 1;
-    trc_pkt.tcp_hdr.rst = 0;
-    trc_pkt.tcp_hdr.psh = 0;
-    trc_pkt.tcp_hdr.ack = 0;
-    trc_pkt.tcp_hdr.urg = 0;
-    trc_pkt.tcp_hdr.window = htons(8192);
-    trc_pkt.tcp_hdr.check = 0; //Let IP stack calculate checksum
-    trc_pkt.tcp_hdr.urg_ptr = 0;
-
-    int one = 1;
-	const int *val = &one;
-    if (setsockopt (sock_fd, IPPROTO_IP, IP_HDRINCL, val, sizeof (one)) < 0)
+    // Tell the IPv4 layer we are providing the IP header
+    int IP_HDRINCL_ON = 1;
+    if (setsockopt (sock_fd, IPPROTO_IP, IP_HDRINCL, &IP_HDRINCL_ON, sizeof (IP_HDRINCL_ON)) < 0)
 	{
 		printf ("Error setting IP_HDRINCL. Error number : %d . Error message : %s \n" , errno , strerror(errno));
 		exit(0);
 	}
 
     struct pseudo_header psh;
-    psh.source_address = src_ip.s_addr;
-	psh.dest_address = addr->sin_addr.s_addr;
-	psh.placeholder = 0;
-	psh.protocol = IPPROTO_TCP;
-	psh.tcp_length = htons( sizeof(struct tcphdr) );
+    traceroute_pseudo_header_init(&psh, local_ip.s_addr, addr->sin_addr.s_addr);
 		
     for (ttl=1; ttl<MAX_TTL && done_flag==false; ttl++) {
         for (i=0; i<REPEAT_HOP; i++) {
-            int offset = (ttl*3) + i;
+            offset = (ttl*3) + i;
+
+            // Update the ttl for every set of 3 hops
             trc_pkt.iphdr.ip_ttl = ttl;
+
+            // the TCP Source port is used to carry the Sequence number
             trc_pkt.tcp_hdr.source = htons( (START_IP_ID + offset));
+
+            // Recalculate TCP header checksum
             trc_pkt.tcp_hdr.check = 0;
 	        memcpy(&psh.tcp , &trc_pkt.tcp_hdr , sizeof (struct tcphdr));
             trc_pkt.tcp_hdr.check = calculate_checksum((void *)&psh, sizeof(struct pseudo_header));
@@ -177,8 +131,11 @@ traceroute_tcp(struct sockaddr_in *addr) {
             printf (".");
             fflush(stdout);
             usleep(INTER_HOP_DELAY);
+
+            // Record transmit time
             rxtime[offset].tv_sec = -1;
             clock_gettime(CLOCK_MONOTONIC, &txtime[(offset)]);
+
             if (sendto(sock_fd, &trc_pkt, sizeof(trc_pkt), 0, (struct sockaddr *)addr,
                 sizeof(*addr)) <= 0) {
                     printf("\nPacket Sending Failed!\n");
@@ -191,21 +148,15 @@ traceroute_tcp(struct sockaddr_in *addr) {
     return 0;
 }
 
-int
-traceroute_icmp(struct sockaddr_in *addr) {
+/*
+ * Transmit ICMP traceroute packets
+ */
+int traceroute_icmp(struct sockaddr_in *addr) {
     int sock_fd;
     int ttl = 1;
-    struct timeval trc_timeout;
-    struct timespec time_start, time_end;
-    trc_timeout.tv_sec = RECV_TIMEOUT;
-    trc_timeout.tv_usec = 0;
     traceroute_icmp_pkt trc_pkt;
     struct sockaddr_in iphop_addr;
     int i = 0;
-    struct sockaddr_in recv_addr;
-    int addr_len=sizeof(recv_addr);
-    bool tr_fail = false;
-    bool done=false;
 
     sock_fd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
     if (sock_fd < 0) {
@@ -213,31 +164,28 @@ traceroute_icmp(struct sockaddr_in *addr) {
         return -1;
     }
 
-    if (setsockopt(sock_fd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&trc_timeout, sizeof(trc_timeout)) != 0) {
-        printf ("Setting socket option for timeout failed \n");
-        return -1;
-    }
-
-    memset(&trc_pkt, 0, sizeof(trc_pkt));
-    trc_pkt.hdr.type = ICMP_ECHO;
-    trc_pkt.hdr.un.echo.id = htons(1);
-    trc_pkt.hdr.un.echo.sequence = htons(1000);
-    trc_pkt.hdr.checksum = calculate_checksum(&trc_pkt, sizeof(trc_pkt));
+    traceroute_icmphdr_init (&trc_pkt.icmp_hdr);
 
     for (ttl=1; ttl<MAX_TTL && done_flag==false; ttl++) {
         for (i=0; i<REPEAT_HOP; i++) {
             int offset = (ttl*3) + i;
+
+            // Set ttl
             if (setsockopt(sock_fd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl))!=0) {
                 printf ("Setting socket option for TTLfailed \n");
                 return -1;
             }
-            trc_pkt.hdr.un.echo.sequence = htons(START_IP_ID+offset);
-            trc_pkt.hdr.checksum = 0;
-            trc_pkt.hdr.checksum = calculate_checksum(&trc_pkt, sizeof(trc_pkt));
+
+            // Use the icmp sequence nubmer to carry the traceroute sequence number
+            trc_pkt.icmp_hdr.un.echo.sequence = htons(START_IP_ID+offset);
+            trc_pkt.icmp_hdr.checksum = 0;
+            trc_pkt.icmp_hdr.checksum = calculate_checksum(&trc_pkt, sizeof(trc_pkt));
 
             printf (".");
             fflush(stdout);
             usleep(INTER_HOP_DELAY);
+
+            // Record transmit time
             rxtime[offset].tv_sec = -1;
             clock_gettime(CLOCK_MONOTONIC, &txtime[(offset)]);
             if (sendto(sock_fd, &trc_pkt, sizeof(trc_pkt), 0, (struct sockaddr *)addr,
@@ -253,84 +201,73 @@ traceroute_icmp(struct sockaddr_in *addr) {
     return 0;
 }
 
-int main(int argc, char *argv[])
-{
-    struct sockaddr_in sa;
-    int rc, ip_arg = 1;
-    bool tcp_traceroute = false;
-    char dest_addr_str[INET_ADDRSTRLEN];
-    //char src_addr_str[INET_ADDRSTRLEN];
-    if (argc < 2) {
-        Usage();
-        return 1;
-    }
-    // First parameter sanity
-    if (strstr(argv[0], "traceroute") == NULL) {
-        printf("%s", argv[0]);
-        Usage();
-        return 1;
-    }
-
-    if (argc == 3) {
-        if (!strncmp(argv[1], "--tcp", strlen("--tcp"))) {
-            ip_arg = 2;
-        } else if (!strncmp(argv[2], "--tcp", strlen("--tcp"))) {
-            ip_arg = 1;
-        } else {
-            Usage();
-            return 1;
-        }
-        tcp_traceroute = true;
-    }
-
-    // Convert Destination IP string or hostname to IP
-    if (resolve_host(argv[ip_arg], &sa) == -1) {
-        Usage();
-        return 1;
-    }
-    dest_ip.s_addr = sa.sin_addr.s_addr;
-    inet_ntop(AF_INET, &(sa.sin_addr), dest_addr_str, INET_ADDRSTRLEN);
-
-    struct sockaddr_in src_addr;
-	rc = get_local_ip( &src_addr);
-    if (rc == -1) {
-        return 1;
-    }
-    src_ip = src_addr.sin_addr;
-    //inet_ntop(AF_INET, &(src_addr.sin_addr), src_addr_str, INET_ADDRSTRLEN);
-
-    /* Start thread to sniff received packets */
-	char *name = "Receiver Thread";
-	pthread_t receiver_thread;
-	if( pthread_create( &receiver_thread , NULL ,  receive_ack , (void*) name) < 0)
-	{
-		printf ("Could not create sniffer thread. Error number : %d . Error message : %s \n" , errno , strerror(errno));
-		exit(0);
-	}
-
-    if (tcp_traceroute == true) {
-        printf ("SYN traceroute to %s (%s), %d hops max \n", argv[1], dest_addr_str, MAX_TTL);
-        rc = traceroute_tcp(&sa);
-    } else {
-        printf ("ICMP traceroute to %s (%s), %d hops max \n", argv[1], dest_addr_str, MAX_TTL);
-        rc = traceroute_icmp(&sa);
-    }
-
-    // Print the Traceroute output
-    if (rc == 0) {
-        sleep(1);
-        print_output();
-    }
-
-    return 0;
-}
-
 /*
-	Sniff incoming packets.
-*/
-void * receive_ack( void *ptr )
+ * Process the received packet
+ * Expecting following packets
+ * SYN tracroute :
+ *      TCP SYNACK packet
+ *      ICMP Time exceeded packet. Inner packet is IP + TCP
+ * ICMP traceroute :
+ *      ICMP time exceedded packet . Inner packet is icmp
+ *      ICMP echo reply packet
+ */
+void process_packet(unsigned char* buffer, int size, struct sockaddr_in *recv_addr)
 {
-	start_sniffer();
+	//Get the IP Header part of this packet
+	struct ip *iph = (struct ip*)buffer;
+    struct icmphdr icmp_hdr;
+
+	struct sockaddr_in source,dest;
+	unsigned short iphdrlen;
+	iphdrlen = iph->ip_hl*4;
+    int ip_id = ntohs(iph->ip_id) - START_IP_ID;
+
+    // Handle TCP SYNACK
+	if (iph->ip_p == IPPROTO_TCP) {
+		struct tcphdr *tcph=(struct tcphdr*)(buffer + iphdrlen);
+		//if(tcph->syn == 1 && tcph->ack == 1 && source.sin_addr.s_addr == dest_ip.s_addr) {
+		if(tcph->syn == 1 && tcph->ack == 1) {
+		    source.sin_addr.s_addr = iph->ip_src.s_addr;
+            if (source.sin_addr.s_addr == dest_ip.s_addr) {
+                ip_id = ntohs(tcph->th_dport) - START_IP_ID;
+                clock_gettime(CLOCK_MONOTONIC, &rxtime[ip_id]);
+                iphop_addr[ip_id] = *recv_addr;
+                done_offset=ip_id;
+                if ((done_offset % REPEAT_HOP) == (REPEAT_HOP-1)) {
+                    done_flag = true;
+                }
+            }
+		}
+	} else { //Handle ICMP packet
+		struct icmphdr *icmp_hdr=(struct icmphdr*)(buffer + iphdrlen);
+        struct ip *inner_ip = (struct ip*)((uint8_t *)icmp_hdr + sizeof(struct icmphdr));
+        int proto = inner_ip->ip_p;
+        uint16_t inner_ip_len = inner_ip->ip_hl*4;; 
+        // ICMP Echo Reply from Server
+        if((icmp_hdr->type == ICMP_ECHOREPLY && icmp_hdr->code == 0))  {
+                ip_id = ntohs(icmp_hdr->un.echo.sequence) - START_IP_ID;
+                clock_gettime(CLOCK_MONOTONIC, &rxtime[ip_id]);
+                iphop_addr[ip_id] = *recv_addr;
+                done_offset=ip_id;
+                if ((done_offset % REPEAT_HOP) == (REPEAT_HOP-1)) {
+                    done_flag = true;
+                }
+        } else if (proto == IPPROTO_TCP) { // ICMP Time Exceeded Response for TCP Packet
+            struct tcphdr *inner_tcp = (struct tcphdr*)((uint8_t *)inner_ip + inner_ip_len);
+            uint16_t sport = ntohs(inner_tcp->th_sport);
+            ip_id = sport - START_IP_ID;
+            clock_gettime(CLOCK_MONOTONIC, &rxtime[ip_id]);
+            iphop_addr[ip_id] = *recv_addr;
+        } else if (proto == IPPROTO_ICMP) { //ICMP Time Exceeded Response for ICMP Packet
+            if((icmp_hdr->type == ICMP_TIME_EXCEEDED && icmp_hdr->code == ICMP_EXC_TTL))  {
+                struct icmphdr *inner_icmp = (struct icmphdr*)((uint8_t *)inner_ip + inner_ip_len);
+                ip_id = ntohs(inner_icmp->un.echo.sequence) - START_IP_ID;
+                clock_gettime(CLOCK_MONOTONIC, &rxtime[ip_id]);
+                iphop_addr[ip_id] = *recv_addr;
+            }
+        }
+    }
+    return;
 }
 
 static struct epoll_event *events;
@@ -413,66 +350,81 @@ int start_sniffer()
 }
 
 /*
- * Process the received packet
- * Expecting following packets
- * SYN tracroute :
- *      TCP SYNACK packet
- *      ICMP Time exceeded packet. Inner packet is IP + TCP
- * ICMP traceroute :
- *      ICMP time exceedded packet . Inner packet is icmp
- *      ICMP echo reply packet
- */
-void process_packet(unsigned char* buffer, int size, struct sockaddr_in *recv_addr)
+	Sniff incoming packets.
+*/
+void * receive_pkts( void *ptr )
 {
-	//Get the IP Header part of this packet
-	struct ip *iph = (struct ip*)buffer;
-    struct icmphdr icmp_hdr;
+	start_sniffer();
+}
 
-	struct sockaddr_in source,dest;
-	unsigned short iphdrlen;
-	iphdrlen = iph->ip_hl*4;
-    int ip_id = ntohs(iph->ip_id) - START_IP_ID;
-
-    // Handle TCP SYNACK
-	if (iph->ip_p == IPPROTO_TCP) {
-		struct tcphdr *tcph=(struct tcphdr*)(buffer + iphdrlen);
-		//if(tcph->syn == 1 && tcph->ack == 1 && source.sin_addr.s_addr == dest_ip.s_addr) {
-		if(tcph->syn == 1 && tcph->ack == 1) {
-		    source.sin_addr.s_addr = iph->ip_src.s_addr;
-            if (source.sin_addr.s_addr == dest_ip.s_addr) {
-            ip_id = ntohs(tcph->th_dport) - START_IP_ID;
-            clock_gettime(CLOCK_MONOTONIC, &rxtime[ip_id]);
-            iphop_addr[ip_id] = *recv_addr;
-            done_offset=ip_id;
-            done_flag = true;
-            }
-		}
-	} else { //Handle ICMP packet
-		struct icmphdr *icmp_hdr=(struct icmphdr*)(buffer + iphdrlen);
-        struct ip *inner_ip = (struct ip*)((uint8_t *)icmp_hdr + sizeof(struct icmphdr));
-        int proto = inner_ip->ip_p;
-        uint16_t inner_ip_len = inner_ip->ip_hl*4;; 
-        // ICMP Echo Reply from Server
-        if((icmp_hdr->type == ICMP_ECHOREPLY && icmp_hdr->code == 0))  {
-                ip_id = ntohs(icmp_hdr->un.echo.sequence) - START_IP_ID;
-                clock_gettime(CLOCK_MONOTONIC, &rxtime[ip_id]);
-                iphop_addr[ip_id] = *recv_addr;
-                done_offset=ip_id;
-                done_flag=true;
-        } else if (proto == IPPROTO_TCP) { // ICMP Time Exceeded Response for TCP Packet
-            struct tcphdr *inner_tcp = (struct tcphdr*)((uint8_t *)inner_ip + inner_ip_len);
-            uint16_t sport = ntohs(inner_tcp->th_sport);
-            ip_id = sport - START_IP_ID;
-            clock_gettime(CLOCK_MONOTONIC, &rxtime[ip_id]);
-            iphop_addr[ip_id] = *recv_addr;
-        } else if (proto == IPPROTO_ICMP) { //ICMP Time Exceeded Response for ICMP Packet
-            if((icmp_hdr->type == ICMP_TIME_EXCEEDED && icmp_hdr->code == ICMP_EXC_TTL))  {
-                struct icmphdr *inner_icmp = (struct icmphdr*)((uint8_t *)inner_ip + inner_ip_len);
-                ip_id = ntohs(inner_icmp->un.echo.sequence) - START_IP_ID;
-                clock_gettime(CLOCK_MONOTONIC, &rxtime[ip_id]);
-                iphop_addr[ip_id] = *recv_addr;
-            }
-        }
+int main(int argc, char *argv[])
+{
+    struct sockaddr_in sa;
+    int rc, ip_arg = 1;
+    bool tcp_traceroute = false;
+    char dest_addr_str[INET_ADDRSTRLEN];
+    //char src_addr_str[INET_ADDRSTRLEN];
+    if (argc < 2) {
+        Usage();
+        return 1;
     }
-    return;
+    // First parameter sanity
+    if (strstr(argv[0], "traceroute") == NULL) {
+        printf("%s", argv[0]);
+        Usage();
+        return 1;
+    }
+
+    if (argc == 3) {
+        if (!strncmp(argv[1], "--tcp", strlen("--tcp"))) {
+            ip_arg = 2;
+        } else if (!strncmp(argv[2], "--tcp", strlen("--tcp"))) {
+            ip_arg = 1;
+        } else {
+            Usage();
+            return 1;
+        }
+        tcp_traceroute = true;
+    }
+
+    // Convert Destination IP string or hostname to IP
+    if (resolve_host(argv[ip_arg], &sa) == -1) {
+        Usage();
+        return 1;
+    }
+    dest_ip.s_addr = sa.sin_addr.s_addr;
+    inet_ntop(AF_INET, &(sa.sin_addr), dest_addr_str, INET_ADDRSTRLEN);
+
+    struct sockaddr_in src_addr;
+	rc = get_local_ip( &src_addr);
+    if (rc == -1) {
+        return 1;
+    }
+    local_ip = src_addr.sin_addr;
+
+    /* Start thread to sniff received packets */
+	char *name = "Receiver Thread";
+	pthread_t receiver_thread;
+	if( pthread_create( &receiver_thread , NULL ,  receive_pkts , (void*) name) < 0)
+	{
+		printf ("Could not create sniffer thread. Error number : %d . Error message : %s \n" , errno , strerror(errno));
+		exit(0);
+	}
+
+    /* Start traceroute */
+    if (tcp_traceroute == true) {
+        printf ("SYN traceroute to %s (%s), %d hops max \n", argv[1], dest_addr_str, MAX_TTL);
+        rc = traceroute_tcp(&sa);
+    } else {
+        printf ("ICMP traceroute to %s (%s), %d hops max \n", argv[1], dest_addr_str, MAX_TTL);
+        rc = traceroute_icmp(&sa);
+    }
+
+    // Print the Traceroute output
+    if (rc == 0) {
+        sleep(1);
+        print_output();
+    }
+
+    return 0;
 }
