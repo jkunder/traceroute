@@ -1,0 +1,4 @@
+To build traceroute, run :
+cmake ..
+make
+
