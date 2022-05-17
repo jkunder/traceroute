@@ -70,10 +70,40 @@ ICMP traceroute to 1.1.1.1 (1.1.1.1), 30 hops max
 
 3. Unreachable IP
 ```
-sudo build/traceroute 1.2.3.4
-ICMP traceroute to 1.2.3.4 (1.2.3.4), 30 hops max 
+sudo build/traceroute 1.2.1.9
+ICMP traceroute to 1.2.1.9 (1.2.1.9), 30 hops max 
 .......................................................................................
+  1  10.0.2.2  0.379ms 0.332ms  0.490ms 
+  2  192.168.4.1  3.514ms 3.523ms  3.496ms 
+  3  96.120.91.105  11.572ms 11.059ms  10.738ms 
+  4  24.124.158.129  11.618ms 12.799ms  11.722ms 
+  5  162.151.78.249  11.499ms 13.732ms  12.614ms 
+  6  68.87.226.109  20.919ms 24.493ms  11.346ms 
+  7  0.0.0.0  0.000ms 0.000ms  0.000ms 
+  8  0.0.0.0  0.000ms 0.000ms  0.000ms 
+  9  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 10  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 11  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 12  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 13  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 14  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 15  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 16  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 17  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 18  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 19  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 20  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 21  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 22  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 23  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 24  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 25  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 26  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 27  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 28  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 29  0.0.0.0  0.000ms 0.000ms  0.000ms 
 ```
+Only hops which have default gateway will respond..
 
 #### SYN traceroute
 1. any domain
@@ -86,7 +116,7 @@ SYN traceroute to google.com (142.251.46.238), 30 hops max
 ```
 Note : For SYN with TTL=1, the first hop returns with ICMP time exceeded  
        but for SYN with TTL= 2, packet is still forwarded to the server, and the SYNACK response is received. (Verified with packet trace)
-       It appears that intermediate servers do not decrement ttl for SYN packets
+       It appears that intermediate routers do not decrement ttl for SYN packets
 
 
 2. any IP
@@ -97,6 +127,78 @@ SYN traceroute to 1.1.1.1 (1.1.1.1), 30 hops max
   1  10.0.2.2  0.605ms 0.382ms  0.524ms 
   2  1.1.1.1  15.306ms 14.768ms  14.731ms
 ```
+
+3. Unreachable IP
+```
+sudo build/traceroute 1.2.1.9 --tcp
+SYN traceroute to 1.2.1.9 (1.2.1.9), 30 hops max 
+.......................................................................................
+  1  10.0.2.2  0.450ms 0.458ms  0.774ms 
+  2  0.0.0.0  0.000ms 0.000ms  0.000ms 
+  3  0.0.0.0  0.000ms 0.000ms  0.000ms 
+  4  0.0.0.0  0.000ms 0.000ms  0.000ms 
+  5  0.0.0.0  0.000ms 0.000ms  0.000ms 
+  6  0.0.0.0  0.000ms 0.000ms  0.000ms 
+  7  0.0.0.0  0.000ms 0.000ms  0.000ms 
+  8  0.0.0.0  0.000ms 0.000ms  0.000ms 
+  9  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 10  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 11  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 12  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 13  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 14  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 15  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 16  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 17  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 18  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 19  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 20  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 21  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 22  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 23  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 24  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 25  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 26  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 27  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 28  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ ```
+
+4. Non open port (ex with port 22)
+```
+sudo build/traceroute 1.1.1.1 --tcp
+SYN traceroute to 1.1.1.1 (1.1.1.1), 30 hops max 
+.......................................................................................
+  1  10.0.2.2  0.451ms 0.592ms  0.550ms 
+  2  0.0.0.0  0.000ms 0.000ms  0.000ms 
+  3  0.0.0.0  0.000ms 0.000ms  0.000ms 
+  4  0.0.0.0  0.000ms 0.000ms  0.000ms 
+  5  0.0.0.0  0.000ms 0.000ms  0.000ms 
+  6  0.0.0.0  0.000ms 0.000ms  0.000ms 
+  7  0.0.0.0  0.000ms 0.000ms  0.000ms 
+  8  0.0.0.0  0.000ms 0.000ms  0.000ms 
+  9  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 10  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 11  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 12  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 13  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 14  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 15  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 16  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 17  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 18  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 19  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 20  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 21  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 22  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 23  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 24  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 25  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 26  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 27  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 28  0.0.0.0  0.000ms 0.000ms  0.000ms 
+ 29  0.0.0.0  0.000ms 0.000ms  0.000ms 
+```
+No response is received from the server if the port is closed.
 
 #### Invalid Parameters
 ```

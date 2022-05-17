@@ -18,20 +18,20 @@
 #include "net_utils.h"
 
 
-// rx thread writes true when packet from server is received
-// indicating to tx thread to stop hops
-bool done_flag = false;
-// The last sequence number that was received
-int done_offset = 0;
-struct in_addr dest_ip;
-struct in_addr local_ip;
-
 // Trace Route Constants
 #define REPEAT_HOP 3
 #define MAX_TTL 30 
 #define START_IP_ID 1000
 #define MAX_EVENTS 100
 #define INTER_HOP_DELAY 100000 //100ms
+
+// rx thread writes true when packet from server is received
+// indicating to tx thread to stop hops
+bool done_flag = false;
+// The last sequence number that was received
+int done_offset = MAX_TTL*REPEAT_HOP;
+struct in_addr dest_ip;
+struct in_addr local_ip;
 
 // Store the Tx and Rx times and the Hop's IP
 struct timespec txtime[REPEAT_HOP*MAX_TTL];
