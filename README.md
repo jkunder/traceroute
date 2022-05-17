@@ -7,7 +7,8 @@
     User can optionally specify a --tcp option which uses TCP SYN packets instead of ICMP echo requests.
 
 ## Build Instructions
-Either use containerized build or build on a Linux host
+Either use containerized build or build on a Linux host.
+The traceroute binary is generated in the build directory. "build/traceroute"
 
 ### Containerized build
 ```
@@ -15,7 +16,6 @@ Either use containerized build or build on a Linux host
 ```
 
 ### On Linux host
-The traceroute binary is generated in the build directory  
 (Min requirements build-essential tools,  cmake (version 3.10 and above))
 ``` 
 cd build
@@ -116,7 +116,7 @@ SYN traceroute to google.com (142.251.46.238), 30 hops max
 ```
 Note : For SYN with TTL=1, the first hop returns with ICMP time exceeded  
        but for SYN with TTL= 2, packet is still forwarded to the server, and the SYNACK response is received. (Verified with packet trace)
-       It appears that intermediate routers do not decrement ttl for SYN packets
+       Further packet tracing, found out that the host doing the NAT on my setup is updating the TTL to 64.
 
 
 2. any IP
